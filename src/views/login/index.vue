@@ -9,7 +9,7 @@
       label-position="left"
     >
       <div class="title-container">
-        <h3 class="title">Login Cloud Disk</h3>
+        <h3 class="title">登录</h3>
       </div>
 
       <el-form-item prop="username">
@@ -60,10 +60,10 @@
         @click.native.prevent="gotoRegister"
       >注册</el-button>
 
-      <!-- <div class="tips">
+      <div class="tips">
         <span style="margin-right:20px;">username: admin</span>
-        <span>password: any</span>
-      </div> -->
+        <span>password: 111111</span>
+      </div>
     </el-form>
   </div>
 </template>
