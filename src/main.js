@@ -15,6 +15,13 @@ import router from './router'
 import '@/icons' // icon
 import '@/permission' // permission control
 
+import axios from 'axios'
+
+// 设置接口请求的域名
+// axios.defaults.baseURL = process.env.NODE_ENV === 'development' ? 'http://127.0.0.1:9000/' : ''
+// 请求超时时间20s
+axios.defaults.timeout = 60000
+
 /**
  * If you don't want to use mock-server
  * you want to use MockJs for mock api

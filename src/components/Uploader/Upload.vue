@@ -3,141 +3,311 @@
     <div>{{ path }}</div>
     <el-upload
       class="upload"
+      action=""
       drag
-      action="/api/file/upload"
       multiple
-      :http-request="multipartUpload"
+      :show-file-list="false"
+      :http-request="upload"
     >
       <i class="el-icon-upload" />
       <div class="el-upload__text">将文件拖到此处，或<em>点击上传</em></div>
-      <!-- <div slot="tip" class="el-upload__tip">只能上传jpg/png文件，且不超过500kb</div> -->
     </el-upload>
+
+    <!-- 上传的文件列表 -->
+    <div>
+      <ul class="upload-file-list">
+        <li v-for="(file, fIndex) of fileUploadQueue">
+          <div class="file-flx-row">
+            <div class="flx-l"><i class="el-icon-document" />{{ file.name }}</div>
+            <div class="flx-r">
+              <i v-if="file.progress === 100" class="el-icon-upload-success el-icon-circle-check" />
+              <!--<i v-if="file.progress === 100" class="el-icon-close" @click="onRemoveFile(file.hash)"></i>-->
+            </div>
+          </div>
+
+          <div v-show="file.progress < 100" class="progress-bar">
+            <div class="progress-out">
+              <div class="progress-in" :style="{width: file.progress + '%'}" />
+            </div>
+            <div class="progress-rate">{{ file.progress }}%</div>
+          </div>
+        </li>
+      </ul>
+    </div>
   </div>
 </template>
 
 <script>
-import sha1 from 'js-sha1'
-import { mapGetters } from 'vuex'
-import store from '@/store'
 import axios from 'axios'
-import { UploadChunk } from '@/api/file'
+import sha1 from 'js-sha1'
+
+// 每一分块大小5MB
+const CHUNK_SIZE = 5 * 1024 * 1024
+// 文件对象的切片方法
+const blobSlice = File.prototype.slice || File.prototype.mozSlice || File.prototype.webkitSlice
 
 export default {
-  props: ['path'],
-  store,
-  data() {
-    return {
-      loadingtext: 'Loading1',
-      fileHash: ''
+  props: {
+    path: {
+      type: String,
+      default: 'root'
     }
   },
-  computed: {
-    ...mapGetters([
-      'UploadId'
-    ])
+  data() {
+    return {
+      fileUploadQueue: [] // 上传的文件队列
+    }
   },
   methods: {
-    multipartUpload(params) {
-      const file = params.file
-      const fileName = file.name
-      const fileSize = file.size
-      // const fileType = file.type
-
+    async upload(fileObj) {
+      const file = fileObj.file
       // 加载动画
       const loading = this.$loading({
         lock: true,
-        text: '正在加载' + ' : ' + fileName,
+        text: '正在加载' + ' : ' + file.name,
         spinner: 'el-icon-loading',
         background: 'rgba(0, 0, 0, 0.7)'
       })
 
-      const read = this.getStreamReader(file);
-
-      (async() => {
-        let chunk
-        const hasher = sha1.create()
-        while ((chunk = await read())) {
-          hasher.update(chunk)
-        }
-        // 生成文件Hash
-        var fileHash = hasher.hex()
-        console.log(fileHash)
-
-        // 初始化分块传输
-
-        const res = this.multipartInit(fileSize, fileHash)
-        this.fileHash = fileHash
-        loading.close()
-        res.then(function(response) {
-          const uploadid = response.data.data.UploadId
-          UploadChunk(file, uploadid)
-        })
-      })()
-    },
-    multipartInit(filesize, filehash) {
-      const data = {
-        filePath: this.path,
-        fileHash: filehash,
-        fileSize: filesize
-
+      const hash = await this.getFileHash(file) // 获取文件的hash值
+      const axiosArr = [] // axios请求队列
+      loading.close()
+      const initParams = {
+        fileHash: hash,
+        fileSize: file.size,
+        fileName: file.name,
+        filePath: this.path
       }
 
-      // 发送 POST 请求
-      return axios({
-        method: 'post',
-        url: '/api/file/chunk/init',
-        data
-      })
-      // this.$store
-      //   .dispatch('user/uploadInit', data) // 请求初始化
-      //   .then(function(params) {
-      //     // console.log('123123', params)
-      //   })
-      //   .catch(error => {
-      //     console.log(error)
-      //   })
-    },
-    // 分读取
-    getStreamReader(file, chunkSize = 5 * 1024 * 1024) {
-      const reader = new FileReader()
-      let offset = 0
-      return function() {
-        return new Promise(function(resolve, reject) {
-          if (offset >= file.size) return resolve(null)
+      // 先初始化上传
+      axios.post('/api/file/chunk/init', initParams).then(resp => {
+        resp = resp.data
 
-          console.log('filename:', file.name, (offset / file.size) * 100 + '%')
+        if (+resp.code === 20000) {
+          // 文件分块再上传
+          if (resp.data) {
+            const chunkCount = +resp.data.ChunkCount
 
-          reader.onloadend = function() {
-            resolve(reader.result)
-            offset = offset + chunkSize
+            this.enFileQueue(hash, file.name, file.size, chunkCount)
+
+            for (let i = 0; i < chunkCount; i++) {
+              const start = i * CHUNK_SIZE
+              const end = Math.min(file.size, start + CHUNK_SIZE)
+              const fileChunk = blobSlice.call(file, start, end)
+
+              const result = this.createFormData(fileChunk, i, resp.data.UploadId, hash)
+              axiosArr.push(axios.post('/api/file/chunk/upload', result.form, result.config))
+            }
+
+            // 待所有片段上传完成，合并文件
+            axios.all(axiosArr).then(() => {
+              // 如果有uploadI发起上传完成请求
+              const mergeData = {
+                uploadId: resp.data.UploadId,
+                fileName: file.name,
+                filePath: this.path
+              }
+
+              axios.post('/api/file/chunk/finish', mergeData).catch(err => {
+                this.$message({ message: err, type: 'error' })
+              })
+            }).catch(err => {
+              this.$message({ message: err, type: 'error' })
+            })
+          } else {
+            // 不用分块，文件已经上传过，直接显示上传完成
+            this.enFileQueue(hash, file.name, file.size, 1, 100)
           }
-          reader.onerror = reject
-          reader.readAsArrayBuffer(file.slice(offset, offset + chunkSize))
-        })
+        } else {
+          this.$message({ message: resp.msg, type: 'warning' })
+        }
+      }).catch(err => {
+        this.$message({ message: err, type: 'error' })
+      })
+    },
+
+    /** 获取文件hash */
+    getFileHash(file) {
+      return new Promise((resolve, reject) => {
+        const chunks = Math.ceil(file.size / CHUNK_SIZE) // 分块总数，向上取整
+        // spark = new SparkMD5.ArrayBuffer(),
+        const fileReader = new FileReader()
+        const hasher = sha1.create()
+
+        let currentChunk = 0 // 当前块数
+
+        // 分块获取文件的hash值
+        fileReader.onload = e => {
+          hasher.update(e.target.result)
+          ++currentChunk // 块数递增
+
+          // 如果当前块数小于总的分块数量，load下一个分块
+          if (currentChunk < chunks) {
+            loadNextChunk()
+          } else {
+            const hexHash = hasher.hex()
+
+            resolve(hexHash)
+          }
+        }
+
+        fileReader.onerror = () => {
+          this.$message({ message: '文件读取失败！', type: 'error' })
+        }
+
+        // 读取下一个文件片段
+        function loadNextChunk() {
+          const start = currentChunk * CHUNK_SIZE
+          const end = Math.min(file.size, start + CHUNK_SIZE)
+
+          fileReader.readAsArrayBuffer(blobSlice.call(file, start, end))
+        }
+
+        loadNextChunk()
+      }).catch(err => {
+        this.$message({ message: err, type: 'error' })
+      })
+    },
+
+    /** 构建表单 */
+    createFormData(file, chunkIdx, uploadId, fileHash) {
+      const form = new FormData()
+
+      form.append('file', file)
+      form.append('chunkindex', chunkIdx + 1)
+      form.append('uploadid', uploadId)
+
+      const currentFile = this.getFileFromQueue(fileHash)
+      const config = {
+        headers: {
+          'Content-Type': 'multipart/form-data;boundary = ' + new Date().getTime()
+        },
+        onUploadProgress: resp => {
+          if (resp.lengthComputable) {
+            const curFile = currentFile.file
+            let totalUploaded = 0
+
+            curFile.chunkUploadedArr[chunkIdx] = resp.loaded
+            curFile.chunkUploadedArr.forEach(item => {
+              if (+item > 0) {
+                totalUploaded += Number(item)
+              }
+            })
+            currentFile.file.progress = parseInt((totalUploaded / curFile.size) * 100)
+            // this.$set(this.fileUploadQueue, currentFile.index, curFile);
+          }
+        }
       }
+
+      return { form, config }
+    },
+
+    enFileQueue(hash, name, size, chunks, progress = 0) {
+      const hashObj = {
+        hash: hash,
+        name: name,
+        size: size,
+        progress: progress,
+        chunkUploadedArr: new Array(chunks) // 记录每个分块的已上传文件的大小
+      }
+
+      this.fileUploadQueue.push(hashObj)
+    },
+
+    getFileFromQueue(hash) {
+      const fileQueue = this.fileUploadQueue
+      let targetFile = null
+      let index = 0
+
+      for (let i = 0; i < fileQueue.length; i++) {
+        if (fileQueue[i].hash === hash) {
+          index = i
+          targetFile = fileQueue[i]
+          break
+        }
+      }
+
+      return { file: targetFile, index: index }
     }
 
+    // 移除文件
+    // onRemoveFile(hash){
+    //   const target = this.getFileHash(hash)
+    //
+    //   this.fileUploadQueue.splice(target.index, 1);
+    // },
   }
 }
-
 </script>
 
 <style scoped>
-.upload{
- text-align: center; /*让div内部文字居中*/
-
-    width: 300px;
-    height: 350px;
-    margin: auto;
-    position: relative;
-    top: 0;
-    left: 80;
-    right: 0;
-    bottom: 0;
-}
- .bg-purple {
-    background: blue;
+  .upload-file-list{
+    padding: 15px;
+    list-style: none;
+  }
+  .upload-file-list li{
+    padding: 5px;
+    font-size: 14px;
+  }
+  .file-flx-row{
+    display: flex;
+    line-height: 1.8;
+    cursor: pointer;
+    vertical-align: middle;
+  }
+  .file-flx-row:hover{
+    background: #f5f7fa;
+  }
+  .flx-l{
+    flex: 1;
+  }
+  .file-flx-row:hover .el-icon-close{
+    display: block;
+  }
+  .file-flx-row:hover .el-icon-upload-success{
+    display: none;
   }
 
+  .el-icon-upload-success{
+    color: #67c23a;
+  }
+  .el-icon-close{
+    position: relative;
+    top: 3px;
+    display: none;
+    color: #606266;
+  }
+  .progress-bar{
+    margin-top: 5px;
+    position: relative;
+    width: 100%;
+    box-sizing: border-box;
+  }
+  .progress-out{
+    position: relative;
+    height: 2px;
+    border-radius: 100px;
+    background-color: #ebeef5;
+    overflow: hidden;
+  }
+  .progress-in{
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 10%;
+    height: 100%;
+    background-color: #409eff;
+    border-radius: 100px;
+    line-height: 1;
+    white-space: nowrap;
+    transition: width .6s ease;
+  }
+  .progress-rate{
+    position: absolute;
+    right: 0;
+    top: -25px;
+    color: #606266;
+    font-size: 13px;
+  }
 </style>
 
