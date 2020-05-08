@@ -9,7 +9,7 @@
           <div class="card-panel-text">
             文件数
           </div>
-          <count-to :start-val="0" :end-val="55" :duration="3000" class="card-panel-num" />
+          <count-to :start-val="0" :end-val="fileCount" :duration="3000" class="card-panel-num" />
         </div>
       </div>
     </el-col>
@@ -22,7 +22,7 @@
           <div class="card-panel-text">
             文件夹
           </div>
-          <count-to :start-val="0" :end-val="5" :duration="3000" class="card-panel-num" />
+          <count-to :start-val="0" :end-val="folderCount" :duration="3000" class="card-panel-num" />
         </div>
       </div>
     </el-col>
@@ -35,7 +35,8 @@
           <div class="card-panel-text">
             已使用存储
           </div>
-          <count-to :start-val="0" :end-val="19280" :duration="3600" class="card-panel-num" />
+          <count-to :start-val="0" :end-val="storage" :duration="3600" class="card-panel-num" />
+          <div>Mb</div>
         </div>
       </div>
     </el-col>
@@ -48,7 +49,7 @@
           <div class="card-panel-text">
             用户数
           </div>
-          <count-to :start-val="0" :end-val="10" :duration="2800" class="card-panel-num" />
+          <count-to :start-val="0" :end-val="userCount" :duration="2800" class="card-panel-num" />
         </div>
       </div>
     </el-col>
@@ -57,14 +58,37 @@
 
 <script>
 import CountTo from 'vue-count-to'
+import axios from 'axios'
 
 export default {
   components: {
     CountTo
   },
+  data() {
+    return {
+      fileCount: 55,
+      folderCount: 21,
+      storage: 123,
+      userCount: 10
+    }
+  },
+  mounted: function() {
+    this.getCount()
+  },
   methods: {
     handleSetLineChartData(type) {
       this.$emit('handleSetLineChartData', type)
+    },
+    getCount() {
+      axios.get('/api/count').then(resp => {
+        const data = resp.data
+        this.fileCount = data.fileCount
+        this.folderCount = data.folderCount
+        this.storage = data.storage
+        this.userCount = data.userCount
+      }).catch(err => {
+        this.$message({ message: err, type: 'error' })
+      })
     }
   }
 }
